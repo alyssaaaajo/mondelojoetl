@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="ETL Exercise - Student Information Integration" />
+  <title>ETL Exercise | Joanna Alyssa Mondelo</title>
+  
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Joanna Alyssa Mondelo</h1>
+      <p class="schedule">IT 3206N | MW 12:30 PM – 3:00 PM</p>
+      <div class="course"> <h2>ETL Exercise</h2> </div>
+    </header>
+
+    <main>
+      <section>
+        <h2>1. Upload Source CSV Files</h2>
+        <p class="intro">Upload the three source files provided for the exercise. All processing happens in your browser.</p>
+        <div class="uploads">
+          <div class="upload-card">
+            <label for="sisFile">Student Information System (SIS)</label>
+            <div>.</div>
+            <input id="sisFile" type="file" accept=".csv,text/csv" />
+          </div>
+          <div>--------------------------------------------------------</div>
+          <div class="upload-card">
+            <label for="lmsFile">Learning Management System (LMS)</label>
+            <div>.</div>
+            <input id="lmsFile" type="file" accept=".csv,text/csv" />
+          </div>
+          <div>--------------------------------------------------------</div>
+          <div class="upload-card">
+            <label for="accountingFile">Accounting System</label>
+            <div>.</div>
+            <input id="accountingFile" type="file" accept=".csv,text/csv" />
+          </div>
+          <div>--------------------------------------------------------</div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="runButton">RUN ETL</button>
+          <button class="secondary" id="downloadButton" disabled>Download JSON</button>
+        </div>
+        <p id="status" class="status" aria-live="polite">Upload the three CSV files and click RUN ETL.</p>
+      </section>
+
+      <section>
+        <h2>2. JSON Output</h2>
+        <p class="intro">The integrated records are matched using student_id. Missing LMS or Accounting information is kept as null, so no SIS student record is removed.</p>
+        <div id="output" class="empty">Upload the CSV files and click RUN ETL.</div>
+      </section>
+    </main>
+    <footer>ETL Exercise · IT 3206N · Joanna Alyssa Mondelo</footer>
+  </div>
+  <script src="script.js"></script>
+  <script>
+    function parseCSV(text) {
+      const rows = [];
+      let row = [], value = '', quoted = false;
+      text = text.replace(/^\uFEFF/, '');
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quoted) {
+          if (ch === '"' && text[i + 1] === '"') { value += '"'; i++; }
+          else if (ch === '"') quoted = false;
+          else value += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === ',') { row.push(value); value = ''; }
+        else if (ch === '\n') { row.push(value.replace(/\r$/, '')); if (row.some(v => v.trim() !== '')) rows.push(row); row = []; value = ''; }
+        else value += ch;
+      }
+      row.push(value.replace(/\r$/, ''));
+      if (row.some(v => v.trim() !== '')) rows.push(row);
+      if (!rows.length) return [];
+      const headers = rows.shift().map(h => h.trim().toLowerCase().replace(/^\ufeff/, ''));
+      return rows.map(values => Object.fromEntries(headers.map((h, i) => [h, (values[i] ?? '').trim()])));
+    }
+
+    function get(row, ...keys) {
+      for (const key of keys) if (row[key] !== undefined) return row[key];
+      return '';
+    }
+    function properCase(value) {
+      return String(value ?? '').trim().toLowerCase().replace(/\b([a-z])/g, c => c.toUpperCase());
+    }
+    function programName(value) {
+      const code = String(value ?? '').trim().toUpperCase();
+      const programs = {
+        BSIT: 'Bachelor of Science in Information Technology',
+        BSCS: 'Bachelor of Science in Computer Science',
+        BSIS: 'Bachelor of Science in Information Systems'
+      };
+      return programs[code] || code;
+    }
+    function numericOrText(value) {
+      const clean = String(value ?? '').trim();
+      if (clean === '') return null;
+      const number = Number(clean.replace(/,/g, ''));
+      return Number.isFinite(number) ? number : clean.toUpperCase();
+    }
+    function numericOrNull(value) {
+      const clean = String(value ?? '').trim().replace(/,/g, '');
+      if (clean === '') return null;
+      const number = Number(clean);
+      if (!Number.isFinite(number)) throw new Error('An account_balance value is not numeric: ' + value);
+      return number;
+    }
+    function readFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(parseCSV(String(reader.result)));
+        reader.onerror = () => reject(new Error('Could not read ' + file.name));
+        reader.readAsText(file);
+      });
+    }
+
+    let latestJSON = null;
+    document.getElementById('runButton').addEventListener('click', async () => {
+      const status = document.getElementById('status');
+      const output = document.getElementById('output');
+      const download = document.getElementById('downloadButton');
+      const sisFile = document.getElementById('sisFile').files[0];
+      const lmsFile = document.getElementById('lmsFile').files[0];
+      const accountingFile = document.getElementById('accountingFile').files[0];
+      download.disabled = true;
+      latestJSON = null;
+      if (!sisFile || !lmsFile || !accountingFile) {
+        status.className = 'status error';
+        status.textContent = 'Please upload all three CSV files before running ETL.';
+        return;
+      }
+      try {
+        status.className = 'status';
+        status.textContent = 'Reading and transforming CSV files...';
+        const [sisRows, lmsRows, accountingRows] = await Promise.all([
+          readFile(sisFile), readFile(lmsFile), readFile(accountingFile)
+        ]);
+        if (!sisRows.length) throw new Error('The SIS CSV has no student records.');
+
+        const lmsById = new Map();
+        for (const row of lmsRows) {
+          const id = get(row, 'student_id', 'studentid').trim();
+          if (id && !lmsById.has(id)) lmsById.set(id, row);
+        }
+        const accountingById = new Map();
+        for (const row of accountingRows) {
+          const id = get(row, 'student_id', 'studentid').trim();
+          if (id && !accountingById.has(id)) accountingById.set(id, row);
+        }
+
+        const result = sisRows.map(student => {
+          const rawId = get(student, 'student_id', 'studentid').trim();
+          if (!rawId) throw new Error('A SIS row is missing student_id.');
+          const studentId = Number(rawId);
+          if (!Number.isInteger(studentId)) throw new Error('Student ID must be an integer: ' + rawId);
+          const lms = lmsById.get(rawId) || null;
+          const accounting = accountingById.get(rawId) || null;
+          const grade = lms ? get(lms, 'final_grade', 'finalgrade') : '';
+          const balance = accounting ? get(accounting, 'account_balance', 'accountbalance') : '';
+          return {
+            studentId,
+            studentName: properCase(get(student, 'student_name', 'studentname')),
+            program: programName(get(student, 'program_code', 'programcode')),
+            emailAddress: get(student, 'email', 'email_address', 'emailaddress').trim().toLowerCase(),
+            courseCode: lms ? (get(lms, 'course_code', 'coursecode').trim().toUpperCase() || null) : null,
+            finalGrade: lms ? numericOrText(grade) : null,
+            completionStatus: lms ? (get(lms, 'completion_status', 'completionstatus').trim() ? properCase(get(lms, 'completion_status', 'completionstatus')) : null) : null,
+            outstandingBalance: accounting ? numericOrNull(balance) : null,
+            currency: accounting ? (get(accounting, 'currency').trim().toUpperCase() || null) : null
+          };
+        });
+
+        latestJSON = JSON.stringify(result, null, 2);
+        output.className = '';
+        output.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.textContent = latestJSON;
+        output.appendChild(pre);
+        download.disabled = false;
+        const missingLms = result.filter(r => r.courseCode === null).length;
+        const missingAccounting = result.filter(r => r.outstandingBalance === null && r.currency === null).length;
+        status.className = 'status success';
+        status.textContent = `ETL completed! ${result.length} SIS student record(s) processed. Missing LMS: ${missingLms}; missing Accounting: ${missingAccounting}.`;
+      } catch (error) {
+        status.className = 'status error';
+        status.textContent = 'ETL could not be completed: ' + error.message;
+        output.className = 'empty';
+        output.textContent = 'Please check your CSV files and try again.';
+      }
+    });
+
+    document.getElementById('downloadButton').addEventListener('click', () => {
+      if (!latestJSON) return;
+      const blob = new Blob([latestJSON], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'integrated_student_data.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+  </script>
+</body>
+</html>
